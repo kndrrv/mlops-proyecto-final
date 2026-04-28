@@ -1,0 +1,6 @@
+outs:
+- md5: 5480951f8db23bd57ed9cb3682b407d0
+  size: 3191
+  path: dataset.csv
+  desc: Dataset principal del proyecto
+  hash: md5
