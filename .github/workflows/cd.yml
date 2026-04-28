@@ -1,0 +1,181 @@
+name: CD — Deploy a Producción
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 2 * * 1"  # Reentrenar todos los lunes a las 2am UTC
+
+env:
+  IMAGE_NAME: mlops-final-api
+  REGISTRY: ghcr.io/${{ github.repository_owner }}
+
+jobs:
+  # ── 1. Tests previos al deploy ─────────────────────────────────────────────
+  test:
+    name: Validar antes de deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Instalar dependencias
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt pytest pytest-cov
+
+      - name: Crear directorios y entrenar modelo para tests
+        env:
+          DATA_PATH: data/dataset.csv
+          MODEL_PATH: models/model.pkl
+          ENCODER_PATH: models/label_encoder.pkl
+          METRICS_PATH: metrics.json
+        run: |
+          mkdir -p models
+          python src/train.py
+
+      - name: Ejecutar tests
+        env:
+          GROQ_API_KEY: gsk-dummy-key-for-ci-tests-only
+          MODEL_PATH: models/model.pkl
+          ENCODER_PATH: models/label_encoder.pkl
+        run: pytest tests/ -v
+
+  # ── 2. Build y push de imagen Docker ──────────────────────────────────────
+  build:
+    name: Build Docker Image
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login a GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Metadata de la imagen
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=latest
+
+      - name: Build y push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  # ── 3. Deploy a EC2 ────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy a Producción
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Deploy a EC2 via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            docker stop mlops-api || true
+            docker rm mlops-api || true
+            docker run -d \
+              --name mlops-api \
+              --restart unless-stopped \
+              -p 8000:8000 \
+              -e MODEL_PATH=/app/models/model.pkl \
+              -e ENCODER_PATH=/app/models/label_encoder.pkl \
+              -e DATA_PATH=/app/data/dataset.csv \
+              -e METRICS_PATH=/app/metrics.json \
+              -e AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }} \
+              -e AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }} \
+              -e AWS_REGION=${{ secrets.AWS_REGION }} \
+              -e S3_BUCKET=${{ secrets.S3_BUCKET }} \
+              -e GROQ_API_KEY=${{ secrets.GROQ_API_KEY }} \
+              ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            docker image prune -f
+
+  # ── 4. Reentrenamiento automático ─────────────────────────────────────────
+  retrain:
+    name: Reentrenamiento Automático
+    needs: deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Instalar dependencias
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Configurar credenciales AWS para DVC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Configurar Git para push de artefactos
+        run: |
+          git config user.email "ci-bot@github.com"
+          git config user.name "CI Bot"
+
+      - name: Pull datos desde S3 via DVC
+        run: dvc pull --force
+
+      - name: Ejecutar pipeline de reentrenamiento
+        env:
+          DATA_PATH: data/dataset.csv
+          MODEL_PATH: models/model.pkl
+          ENCODER_PATH: models/label_encoder.pkl
+          METRICS_PATH: metrics.json
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          API_RELOAD_URL: http://${{ secrets.EC2_HOST }}:8000/reload-model
+          PROMOTE_THRESHOLD: "0.01"
+        run: python src/retrain.py
+
+      - name: Publicar métricas como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-metrics
+          path: metrics.json

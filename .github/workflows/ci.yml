@@ -1,0 +1,61 @@
+name: CI — Tests en Pull Request
+
+on:
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Instalar dependencias
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+
+      - name: Crear directorios y entrenar modelo para tests
+        env:
+          DATA_PATH: data/dataset.csv
+          MODEL_PATH: models/model.pkl
+          ENCODER_PATH: models/label_encoder.pkl
+          METRICS_PATH: metrics.json
+        run: |
+          mkdir -p models
+          python src/train.py
+
+      - name: Ejecutar tests con cobertura
+        # GROQ_API_KEY necesita existir para que api.main importe sin KeyError.
+        # En CI usamos una dummy key: los tests mockean el pipeline, no llaman al LLM.
+        env:
+          GROQ_API_KEY: gsk-dummy-key-for-ci-tests-only
+          MODEL_PATH: models/model.pkl
+          ENCODER_PATH: models/label_encoder.pkl
+        run: |
+          pytest tests/ -v \
+            --cov=src \
+            --cov=api \
+            --cov-report=term-missing \
+            --cov-report=xml
+
+      - name: Subir reporte de cobertura
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+      - name: Verificar formato con ruff
+        run: |
+          pip install ruff
+          ruff check src/ api/ tests/ --ignore=E501,UP006,UP007
