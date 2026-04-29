@@ -1,0 +1,5 @@
+outs:
+- md5: abc123placeholder000000000000003
+  size: 1024
+  path: label_encoder.pkl
+  desc: LabelEncoder — mapeo índice <-> nombre de intención
