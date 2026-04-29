@@ -1,0 +1,5 @@
+outs:
+- md5: abc123placeholder000000000000002
+  size: 204800
+  path: model.pkl
+  desc: Modelo entrenado — RandomForestClassifier
