@@ -1,5 +1,5 @@
 outs:
-- md5: d22c670e2060f92639c441472b8c7bdd
+- md5: 50ca1c3258a6975ecd735fb8be1d3b09
   size: 35452
   path: model.pkl
   desc: Modelo entrenado — RandomForestClassifier
