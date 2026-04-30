@@ -47,9 +47,9 @@ def _run(cmd: list[str]) -> None:
 
 
 def pull_data() -> None:
-    """Descarga datos y modelos actuales desde S3 via DVC."""
+    """Descarga datos desde S3 via DVC."""
     logger.info("Descargando datos desde S3...")
-    _run(["dvc", "pull", "--force"])
+    _run(["dvc", "pull", "data/dataset.csv", "--force"])
 
 
 def push_artifacts() -> None:
