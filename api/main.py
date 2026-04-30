@@ -1,16 +1,16 @@
 """
-main.py — API híbrida: TF-IDF clasifica intención + GPT-4o-mini genera respuesta.
+main.py — API híbrida: TF-IDF clasifica intención + Llama3 (Groq) genera respuesta.
 
 Flujo:
   1. /chat recibe el texto del usuario
   2. El modelo local (TF-IDF) clasifica la intención
   3. Se construye un prompt con la intención + texto original
-  4. GPT-4o-mini genera una respuesta natural
+  4. Llama3 via Groq genera una respuesta natural (gratis)
   5. Se retorna respuesta + metadatos MLOps
 
 Endpoints:
   GET  /health        — Liveness check
-  POST /chat          — Chatbot híbrido (modelo local + GPT)
+  POST /chat          — Chatbot híbrido (modelo local + Groq)
   POST /predict       — Clasificación raw (para el pipeline MLOps)
   POST /reload-model  — Recarga artefactos tras reentrenamiento
 """
@@ -33,10 +33,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Cliente OpenAI (la API key viene de variable de entorno) ──────────────────
-openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-GPT_MODEL     = os.getenv("GPT_MODEL", "gpt-4o-mini")
-GPT_MAX_TOKENS = int(os.getenv("GPT_MAX_TOKENS", "300"))
+# ── Cliente Groq (compatible con la API de OpenAI) ────────────────────────────
+# Groq es gratuito y usa el mismo cliente de openai apuntando a otra base_url
+groq_client = OpenAI(
+    api_key=os.environ["GROQ_API_KEY"],
+    base_url="https://api.groq.com/openai/v1",
+)
+LLM_MODEL        = os.getenv("LLM_MODEL", "llama-3.1-8b-instant")
+LLM_MAX_TOKENS   = int(os.getenv("LLM_MAX_TOKENS", "300"))
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.4"))
 
 # ── System prompt base del asistente ─────────────────────────────────────────
@@ -71,7 +75,7 @@ INTENT_CONTEXT: dict[str, str] = {
 
 
 def build_user_prompt(text: str, intent: str, confidence: float) -> str:
-    """Construye el prompt para GPT con intención + contexto + mensaje original."""
+    """Construye el prompt para el LLM con intención + contexto + mensaje original."""
     context = INTENT_CONTEXT.get(intent, INTENT_CONTEXT["desconocida"])
     return f"""Intención detectada: {intent} (confianza: {confidence:.0%})
 Contexto de esta intención: {context}
@@ -81,12 +85,12 @@ Mensaje original del usuario: "{text}"
 Genera una respuesta apropiada."""
 
 
-def call_gpt(user_prompt: str) -> str:
-    """Llama a GPT-4o-mini y retorna el texto de respuesta."""
-    logger.info("Llamando a %s...", GPT_MODEL)
-    completion = openai_client.chat.completions.create(
-        model=GPT_MODEL,
-        max_tokens=GPT_MAX_TOKENS,
+def call_llm(user_prompt: str) -> str:
+    """Llama a Llama3 via Groq y retorna el texto de respuesta."""
+    logger.info("Llamando a %s via Groq...", LLM_MODEL)
+    completion = groq_client.chat.completions.create(
+        model=LLM_MODEL,
+        max_tokens=LLM_MAX_TOKENS,
         temperature=0.7,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -94,7 +98,7 @@ def call_gpt(user_prompt: str) -> str:
         ],
     )
     response_text = completion.choices[0].message.content.strip()
-    logger.info("GPT respondió: %s", response_text[:80])
+    logger.info("Groq respondió: %s", response_text[:80])
     return response_text
 
 
@@ -112,8 +116,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Chatbot Híbrido — TF-IDF + GPT-4o-mini",
-    description="Clasificación de intenciones con modelo local + generación de respuestas con OpenAI.",
+    title="Chatbot Híbrido — TF-IDF + Llama3 (Groq)",
+    description="Clasificación de intenciones con modelo local + generación de respuestas con Groq (gratis).",
     version="2.0.0",
     lifespan=lifespan,
 )
@@ -146,7 +150,7 @@ class PredictRequest(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     version: str
-    gpt_model: str
+    llm_model: str
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -154,7 +158,7 @@ class HealthResponse(BaseModel):
 @app.get("/health", response_model=HealthResponse, tags=["Infra"])
 def health():
     """Liveness probe — retorna 200 si el servicio está activo."""
-    return {"status": "ok", "version": app.version, "gpt_model": GPT_MODEL}
+    return {"status": "ok", "version": app.version, "llm_model": LLM_MODEL}
 
 
 @app.post("/chat", response_model=ChatResponse, tags=["Chatbot"])
@@ -162,28 +166,25 @@ def chat(body: ChatRequest):
     """
     Chatbot híbrido.
     1. Modelo local (TF-IDF) detecta la intención.
-    2. GPT-4o-mini genera una respuesta natural usando esa intención como contexto.
+    2. Llama3 via Groq genera una respuesta natural usando esa intención como contexto.
     """
     try:
-        # Paso 1: clasificar con el modelo local
-        result = predict(body.text)
+        result     = predict(body.text)
         intent     = result["intent"]
         confidence = result["confidence"]
 
-        # Si la confianza es baja, marcar como desconocida
         if confidence < CONFIDENCE_THRESHOLD:
             intent = "desconocida"
 
-        # Paso 2: generar respuesta con GPT
         user_prompt   = build_user_prompt(body.text, intent, confidence)
-        response_text = call_gpt(user_prompt)
+        response_text = call_llm(user_prompt)
 
         return {
             "response":    response_text,
             "intent":      intent,
             "confidence":  confidence,
             "all_intents": result["all_intents"],
-            "model_used":  GPT_MODEL,
+            "model_used":  LLM_MODEL,
         }
 
     except FileNotFoundError as e:
@@ -197,7 +198,7 @@ def chat(body: ChatRequest):
 def predict_endpoint(body: PredictRequest):
     """
     Clasificación raw — compatible con el pipeline de reentrenamiento.
-    No llama a GPT, solo retorna la intención del modelo local.
+    No llama al LLM, solo retorna la intención del modelo local.
     """
     text = body.features.get("text", "")
     if not text:
