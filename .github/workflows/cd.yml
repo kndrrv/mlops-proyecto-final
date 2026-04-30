@@ -172,7 +172,7 @@ jobs:
           git config user.name "CI Bot"
 
       - name: Pull datos desde S3 via DVC
-        run: dvc pull --force
+        run: dvc pull data/dataset.csv --force
 
       - name: Ejecutar pipeline de reentrenamiento
         env:
