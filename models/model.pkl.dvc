@@ -1,5 +1,6 @@
 outs:
-- md5: abc123placeholder000000000000002
-  size: 204800
+- md5: e81229b077dde09b5734e83041a59494
+  size: 35452
   path: model.pkl
   desc: Modelo entrenado — RandomForestClassifier
+  hash: md5
