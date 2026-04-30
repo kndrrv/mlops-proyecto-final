@@ -143,6 +143,8 @@ jobs:
     name: Reentrenamiento Automático
     needs: deploy
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -170,6 +172,7 @@ jobs:
         run: |
           git config user.email "ci-bot@github.com"
           git config user.name "CI Bot"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
 
       - name: Pull datos desde S3 via DVC
         run: dvc pull data/dataset.csv --force
