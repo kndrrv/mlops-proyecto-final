@@ -28,15 +28,25 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt pytest pytest-cov
 
-      - name: Crear directorios y entrenar modelo para tests
+      - name: Configurar credenciales AWS para DVC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Descargar datos desde S3 via DVC
+        run: |
+          mkdir -p models
+          dvc pull data/dataset.csv
+
+      - name: Entrenar modelo para tests
         env:
           DATA_PATH: data/dataset.csv
           MODEL_PATH: models/model.pkl
           ENCODER_PATH: models/label_encoder.pkl
           METRICS_PATH: metrics.json
-        run: |
-          mkdir -p models
-          python src/train.py
+        run: python src/train.py
 
       - name: Ejecutar tests
         env:
